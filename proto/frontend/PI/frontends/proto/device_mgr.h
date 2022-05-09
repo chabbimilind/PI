@@ -25,11 +25,47 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <grpcpp/grpcpp.h>
 
 #include "google/rpc/status.pb.h"
 #include "p4/config/v1/p4info.pb.h"
 #include "p4/server/v1/config.pb.h"
 #include "p4/v1/p4runtime.pb.h"
+
+
+#ifndef MAX_VALUE_STR
+#define MAX_VALUE_STR (16) // Max of 16 bytes of any value type
+#endif
+
+#ifndef MAX_FIELD_MATCHES
+#define MAX_FIELD_MATCHES (5) // Max 5 field matches
+#endif
+
+#ifndef MAX_MASK_STR
+#define MAX_MASK_STR (16) // Max IP mask of 16 bytes
+#endif
+
+#ifndef MAX_PARAMS
+#define MAX_PARAMS (8) // Max num of action params = 8
+#endif
+
+#define CACHE_LINE_SIZE (64) // Cacheline of 64 bytes for avoiding false sharing
+
+#ifndef SHM_SZ
+#define SHM_SZ (1<<19) // 512 KB
+#endif
+
+#ifndef MAX_BATCHES
+#define MAX_BATCHES (4) // Four partitions of the SHM buffer for pipelining
+#endif
+
+#ifndef MAX_SERVER_ENTRIES
+#define MAX_SERVER_ENTRIES (10000UL) // Server side copy buffer
+#endif
+#define INVALID_SEND_CNT (0)
+#define INVALID_UPDATE (-1)
+
+
 
 #if __has_cpp_attribute(deprecated)
 #if defined(__clang__)
@@ -44,6 +80,89 @@
 namespace pi {
 
 namespace fe {
+
+namespace local {
+    
+    struct FieldMatch_Exact {
+    char value[MAX_VALUE_STR];
+    };
+
+    struct FieldMatch_Ternary {
+    char value[MAX_VALUE_STR];
+    char mask[MAX_MASK_STR];
+    };
+
+    struct FieldMatch_LPM {
+    char value[MAX_VALUE_STR];
+    uint32_t prefix_len_;
+    };
+
+    struct FieldMatch_Range {
+    char low[MAX_VALUE_STR];
+    char high[MAX_VALUE_STR];
+    };
+
+    struct FieldMatch_Optional {
+    char value[MAX_VALUE_STR];
+    };
+
+    struct Action_Param  {
+        char value[MAX_VALUE_STR];
+        uint32_t param_id_;
+    };
+
+    struct Action  {
+    Action_Param  params_[MAX_PARAMS];
+    uint32_t num_params_;
+    uint32_t action_id_;
+    };
+
+    struct FieldMatch {
+    union {
+        FieldMatch_Exact exact_;
+        FieldMatch_Ternary ternary_;
+        FieldMatch_LPM lpm_;
+        FieldMatch_Range range_;
+        FieldMatch_Optional optional_;
+    };
+    uint32_t field_id_;
+    uint8_t underlyingType;
+    };
+
+    struct TableEntry {
+    uint32_t numFields;
+    FieldMatch match_[MAX_FIELD_MATCHES];
+    Action action_;
+    uint32_t table_id_;
+    };
+
+    struct Update {
+        uint8_t type;
+        TableEntry t;
+    };
+
+
+    grpc::Status WriteLocal(const p4::v1::WriteRequest &request,void * shmp);
+
+    typedef struct TableHeaders {
+        // The head pointer from where the consumer reads data
+        std::atomic<uint64_t> head;
+        uint8_t dummy1[CACHE_LINE_SIZE];
+        // The tail pointer into which the producer puts data
+        std::atomic<uint64_t> tail;
+        uint8_t dummy2[CACHE_LINE_SIZE];
+        // The monotonically increasing last sent count: always an even number.
+        std::atomic<uint64_t> lastSent;
+        // The count of elements in this WriteLocal set.
+        std::atomic<uint64_t> lastSendCnt;
+        // The monotonically increasing last received count (an ACK from receiver to the sender).
+        // if lastRecvd + 1 == lastSent ==> the receive is complete.
+        std::atomic<uint64_t> lastRecvd;
+    } TableHeaders;
+
+    const uint64_t _shmMaxEntries = (SHM_SZ - sizeof(pi::fe::local::TableHeaders))/sizeof(pi::fe::local::Update);
+}
+
 
 namespace proto {
 
@@ -73,6 +192,7 @@ class DeviceMgr {
       p4::v1::ForwardingPipelineConfig *config);
 
   Status write(const p4::v1::WriteRequest &request);
+  Status writeLocal();
 
   Status read(const p4::v1::ReadRequest &request,
               p4::v1::ReadResponse *response) const;
