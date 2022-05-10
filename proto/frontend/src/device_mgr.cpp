@@ -195,8 +195,21 @@ namespace fe {
         }
     }
 
-    grpc::Status WriteLocal(const p4::v1::WriteRequest & request, void * shmp) {
-        // TODO: handle the Context
+    grpc::Status WriteLocal(const p4::v1::WriteRequest & request) {
+        // Get SHM
+        auto dev = request.device_id();
+        char shmpath[512];
+        snprintf(shmpath, 512, "/p4/v1/runtime/local/%ld", dev);
+        /* Open the existing shared memory object and map it
+          into the caller's address space. */
+        int fd = shm_open(shmpath, O_RDWR, 0);
+        if (fd == -1)
+            errExit("shm_open");
+        void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE,
+                                  MAP_SHARED|MAP_LOCKED, fd, 0);
+        if (shmp == MAP_FAILED)
+            errExit("mmap");
+
         int numUpdates = request.updates_size();
         int batchSize = pi::fe::local::_shmMaxEntries/MAX_BATCHES;
         int numBatches = (numUpdates+batchSize-1)/batchSize;
@@ -254,8 +267,10 @@ namespace fe {
                 }
             }
         }
-	pi::fe::local::WaitForAck(h, lastId);
-	return grpc::Status::OK;
+        pi::fe::local::WaitForAck(h, lastId);
+        munmap(shmp, SHM_SZ);
+        shm_unlink(shmpath);
+        return grpc::Status::OK;
     }
   }
 
@@ -567,7 +582,7 @@ class DeviceMgrImp {
         digest_mgr(device_id),
         idle_timeout_buffer(device_id),
         watch_port_enforcer(device_tgt, &access_arbitration) {
-	  snprintf(shmpath,512, "/p4/v1/runtime/local/%ld", device_id);
+          snprintf(shmpath,512, "/p4/v1/runtime/local/%ld", device_id);
           shmFd = shm_open(shmpath, O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
           if (shmFd == -1)
             errExit("shm_open");
