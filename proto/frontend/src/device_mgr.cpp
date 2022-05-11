@@ -195,20 +195,49 @@ namespace fe {
         }
     }
 
-    grpc::Status WriteLocal(const p4::v1::WriteRequest & request) {
-        // Get SHM
-        auto dev = request.device_id();
+    static std::mutex devShmMapMutex;
+    static std::unordered_map<uint64_t, void*> devShmMap;
+
+    void * GetDeviceSHM(uint64_t dev) {
+        const std::lock_guard<std::mutex> lock(devShmMapMutex);
+        auto itr = devShmMap.find(dev);
+        if (itr != devShmMap.end()) {
+          return itr->second;
+        }
         char shmpath[512];
         snprintf(shmpath, 512, "/p4/v1/runtime/local/%ld", dev);
         /* Open the existing shared memory object and map it
           into the caller's address space. */
         int fd = shm_open(shmpath, O_RDWR, 0);
-        if (fd == -1)
-            errExit("shm_open");
+        if (fd == -1) {
+            perror("shm_open");
+            return 0;
+        }
         void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE,
                                   MAP_SHARED|MAP_LOCKED, fd, 0);
-        if (shmp == MAP_FAILED)
-            errExit("mmap");
+
+        // unlink immediately. No need to keep it around.
+        shm_unlink(shmpath);
+        if (shmp == MAP_FAILED) {
+            perror("mmap");
+            return 0;
+        }
+        devShmMap[dev] = shmp;
+        return shmp;
+    }
+    
+    __attribute__((destructor)) static void CleanupDeviceShm() {
+        const std::lock_guard<std::mutex> lock(devShmMapMutex);
+        for (auto &item : devShmMap) {
+          munmap(item.second, SHM_SZ);
+        }
+    }
+
+    grpc::Status WriteLocal(const p4::v1::WriteRequest & request) {
+        // Get SHM
+        void *shmp = GetDeviceSHM(request.device_id());
+        if (shmp == 0)
+            errExit("GetDeviceSHM");
 
         int numUpdates = request.updates_size();
         int batchSize = pi::fe::local::_shmMaxEntries/MAX_BATCHES;
@@ -268,8 +297,6 @@ namespace fe {
             }
         }
         pi::fe::local::WaitForAck(h, lastId);
-        munmap(shmp, SHM_SZ);
-        shm_unlink(shmpath);
         return grpc::Status::OK;
     }
   }
