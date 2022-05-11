@@ -233,7 +233,7 @@ namespace fe {
         }
     }
 
-    grpc::Status WriteLocal(const p4::v1::WriteRequest & request) {
+    grpc::Status Write(const p4::v1::WriteRequest & request) {
         // Get SHM
         void *shmp = GetDeviceSHM(request.device_id());
         if (shmp == 0)
