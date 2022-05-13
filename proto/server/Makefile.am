@@ -10,6 +10,10 @@ if WITH_SYSREPO
 AM_CPPFLAGS += -DWITH_SYSREPO
 endif
 
+if WANT_SHM
+AM_CPPFLAGS += -DHAVE_SHM
+endif
+
 AM_CXXFLAGS = -Wall -Werror
 
 lib_LTLIBRARIES = libpigrpcserver.la

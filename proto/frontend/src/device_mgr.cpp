@@ -32,8 +32,10 @@
 #include <unordered_map>
 #include <utility>  // for std::pair
 #include <vector>
-#include<stdint.h>
-#include<omp.h>
+#include <stdint.h>
+#ifdef HAVE_SHM
+#include <omp.h>
+#endif
 #include<algorithm>
 #include<atomic>
 #include<stdint.h>
@@ -85,6 +87,7 @@ namespace pi {
 
 namespace fe {
 
+#ifdef HAVE_SHM
   namespace local {
     // WaitMyTurn causes the sender to wait until it is its turn: e.g., two senders trying to send.
     static uint64_t WaitMyTurn(pi::fe::local::TableHeaders *h, uint64_t numUpdates) {
@@ -233,7 +236,7 @@ namespace fe {
         }
     }
 
-    grpc::Status Write(const p4::v1::WriteRequest & request) {
+    grpc::Status WriteLocal(const p4::v1::WriteRequest & request) {
         // Get SHM
         void *shmp = GetDeviceSHM(request.device_id());
         if (shmp == 0)
@@ -300,6 +303,7 @@ namespace fe {
         return grpc::Status::OK;
     }
   }
+#endif // HAVE_SHM
 
 namespace proto {
 
@@ -594,14 +598,19 @@ struct PIActProfEntries {
 
 class DeviceMgrImp {
  private:
+#ifdef HAVE_SHM
     char shmpath[512];
     int shmFd;
     pi::fe::local::TableHeaders *h;
     pi::fe::local::Update *data;
     pi::fe::local::Update * reader_buffer;
+#endif
  public:
   explicit DeviceMgrImp(device_id_t device_id)
-      :  shmFd(-1), h(NULL), data(NULL), reader_buffer(NULL),
+      :  
+#ifdef HAVE_SHM
+	      shmFd(-1), h(NULL), data(NULL), reader_buffer(NULL),
+#endif
 	device_id(device_id),
         device_tgt({static_cast<pi_dev_id_t>(device_id), 0xffff}),
         server_config(default_server_config),
@@ -609,6 +618,7 @@ class DeviceMgrImp {
         digest_mgr(device_id),
         idle_timeout_buffer(device_id),
         watch_port_enforcer(device_tgt, &access_arbitration) {
+#ifdef HAVE_SHM
           snprintf(shmpath,512, "/p4/v1/runtime/local/%ld", device_id);
           shmFd = shm_open(shmpath, O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
           if (shmFd == -1)
@@ -623,9 +633,11 @@ class DeviceMgrImp {
           reader_buffer = (pi::fe::local::Update*) calloc(sizeof(pi::fe::local::Update), MAX_SERVER_ENTRIES);
           h = static_cast<pi::fe::local::TableHeaders*>(shmp);
           data = (pi::fe::local::Update*)(h+1);
+#endif // HAVE_SHM
 	}
 
   ~DeviceMgrImp() {
+#ifdef HAVE_SHM
     if (h) {
        munmap((void*)h, SHM_SZ);
     }
@@ -634,6 +646,7 @@ class DeviceMgrImp {
     if (reader_buffer) {
        free(reader_buffer);
     }
+#endif // HAVE_SHM
 
     pi_remove_device(device_id);
   }
@@ -643,6 +656,7 @@ class DeviceMgrImp {
   DeviceMgrImp(DeviceMgrImp &&) = delete;
   DeviceMgrImp &operator=(DeviceMgrImp &&) = delete;
 
+#ifdef HAVE_SHM
   Status writeLocal() {
         Status status;
         status.set_code(Code::OK);
@@ -679,10 +693,12 @@ class DeviceMgrImp {
                 // to avoid the branch->continue at the loop beginning
                 lastTail = h->tail.load(memory_order_acquire);
             }
+
 	    pi::fe::local::SendAck(h, newID);
         }
         return status;
     }
+#endif
 
   Status p4_change(const p4v1::ForwardingPipelineConfig &config_proto_new,
                    pi_p4info_t *p4info_new) {
@@ -3441,9 +3457,11 @@ DeviceMgr::write(const p4v1::WriteRequest &request) {
   return pimp->write(request);
 }
 
+#ifdef HAVE_SHM
 Status DeviceMgr::writeLocal() {
   return pimp->writeLocal();
 }
+#endif
 
 Status
 DeviceMgr::read(const p4v1::ReadRequest &request,
@@ -3509,4 +3527,5 @@ DeviceMgr::destroy() {
 }  // namespace fe
 
 }  // namespace pi
+
 

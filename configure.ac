@@ -74,6 +74,13 @@ AC_ARG_WITH([internal-rpc],
                    [Build internal rpc (nanomsg) code @<:@default=no@:>@]),
     [with_internal_rpc="$withval"], [with_internal_rpc=no])
 
+enable_shm=no
+AC_ARG_ENABLE([shm],
+    AS_HELP_STRING([--enable-shm],
+                   [Build PI with shared memory support for local updates.]),
+    [enable_shm=yes], [])
+
+
 AM_CONDITIONAL([WITH_INTERNAL_RPC], [test "$with_internal_rpc" = yes])
 
 AC_ARG_WITH([cli],
@@ -228,6 +235,7 @@ AS_IF([test "x$CXX" = x && test "$want_bmv2" = no && test "$want_fe_cpp" = no], 
 AS_ECHO("")
 AS_ECHO("Features recap ......................................")
 AS_ECHO("Compile for bmv2 ............................. : $want_bmv2")
+AS_ECHO("Compile with shared memory.................... : $enable_shm")
 AS_IF([test "$want_bmv2" = yes], [
 AS_ECHO("  simple_switch found ........................ : $simple_switch_found")
 ])

@@ -32,7 +32,7 @@
 #include "p4/server/v1/config.pb.h"
 #include "p4/v1/p4runtime.pb.h"
 
-
+#ifdef HAVE_SHM
 #ifndef MAX_VALUE_STR
 #define MAX_VALUE_STR (16) // Max of 16 bytes of any value type
 #endif
@@ -64,7 +64,7 @@
 #endif
 #define INVALID_SEND_CNT (0)
 #define INVALID_UPDATE (-1)
-
+#endif // HAVE_SHM
 
 
 #if __has_cpp_attribute(deprecated)
@@ -81,6 +81,7 @@ namespace pi {
 
 namespace fe {
 
+#ifdef HAVE_SHM
 namespace local {
     
     struct FieldMatch_Exact {
@@ -162,7 +163,7 @@ namespace local {
 
     const uint64_t _shmMaxEntries = (SHM_SZ - sizeof(pi::fe::local::TableHeaders))/sizeof(pi::fe::local::Update);
 }
-
+#endif // HAVE_SHM
 
 namespace proto {
 
@@ -192,7 +193,9 @@ class DeviceMgr {
       p4::v1::ForwardingPipelineConfig *config);
 
   Status write(const p4::v1::WriteRequest &request);
+#ifdef HAVE_SHM
   Status writeLocal();
+#endif
 
   Status read(const p4::v1::ReadRequest &request,
               p4::v1::ReadResponse *response) const;

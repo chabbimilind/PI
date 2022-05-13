@@ -426,7 +426,7 @@ class P4RuntimeServiceImpl : public p4v1::P4Runtime::Service {
     return to_grpc_status(status);
   }
 
-
+#ifdef HAVE_SHM
   Status WriteLocal(int deviceId) {
     auto device = Devices::get(deviceId);
     auto device_mgr = device->get_p4_mgr();
@@ -434,7 +434,7 @@ class P4RuntimeServiceImpl : public p4v1::P4Runtime::Service {
     auto status = device_mgr->writeLocal();
     return to_grpc_status(status);
   }
-
+#endif
 
   Status Read(ServerContext *context,
               const p4v1::ReadRequest *request,
@@ -760,4 +760,3 @@ void PIGrpcServerCleanup() {
 }
 
 }
-

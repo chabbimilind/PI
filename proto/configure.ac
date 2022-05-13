@@ -82,6 +82,14 @@ AM_COND_IF([WITH_SYSREPO], [
                  [AC_MSG_ERROR([Missing libsysrepo])])
 ])
 
+enable_shm=no
+AC_ARG_ENABLE([shm],
+    AS_HELP_STRING([--enable-shm],
+                   [Build PI with shared memory support for local updates.]),
+    [enable_shm=yes], [])
+
+AM_CONDITIONAL([WANT_SHM], [test "$enable_shm" = yes])
+
 p4runtime_check_f=$ac_abs_confdir/p4/v1/p4runtime.proto
 AC_CHECK_FILE([$p4runtime_check_f], [],
               [AC_MSG_ERROR([Cannot find p4runtime; did you run 'git submodule update --init'?])])
@@ -129,3 +137,4 @@ AS_ECHO("")
 AS_ECHO("Features recap ......................................")
 AS_ECHO("Use sysrepo gNMI implementation .............. : $with_sysrepo")
 AS_ECHO("Compile demo_grpc ............................ : $with_proto_demo")
+AS_ECHO("Enable shm .................................. : $enable_shm")

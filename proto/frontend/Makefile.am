@@ -3,6 +3,11 @@ ACLOCAL_AMFLAGS = ${ACLOCAL_FLAGS} -I m4
 # for deprecated Protobuf fields
 AM_CXXFLAGS += -Wno-error=deprecated-declarations
 
+if WANT_SHM
+AM_CXXFLAGS += -fopenmp
+endif
+
+
 # include path for protoc-generated code will change when we agree on an
 # installation path
 AM_CPPFLAGS = \
@@ -12,6 +17,10 @@ AM_CPPFLAGS = \
 -I$(top_srcdir) \
 -I$(top_srcdir)/p4info \
 -I$(top_srcdir)/third_party
+
+if WANT_SHM
+AM_CPPFLAGS += -DHAVE_SHM
+endif
 
 libpifeproto_la_SOURCES = \
 src/bimap.h \
