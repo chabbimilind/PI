@@ -620,7 +620,7 @@ class DeviceMgrImp {
         watch_port_enforcer(device_tgt, &access_arbitration) {
 #ifdef HAVE_SHM
           snprintf(shmpath,512, "/p4_v1_runtime_local_%ld", device_id);
-          shmFd = shm_open(shmpath, O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
+          shmFd = shm_open(shmpath, O_CREAT | O_TRUNC | O_RDWR, S_IRUSR | S_IWUSR);
           if (shmFd == -1)
             errExit("shm_open");
 
