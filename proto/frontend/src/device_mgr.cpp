@@ -35,6 +35,7 @@
 #include <stdint.h>
 #ifdef HAVE_SHM
 #include <omp.h>
+#include <thread>
 #endif
 #include<algorithm>
 #include<atomic>
@@ -596,71 +597,14 @@ struct PIActProfEntries {
 
 }  // namespace
 
-class DeviceMgrImp {
- private:
 #ifdef HAVE_SHM
-    char shmpath[512];
-    int shmFd;
-    pi::fe::local::TableHeaders *h;
-    pi::fe::local::Update *data;
-    pi::fe::local::Update * reader_buffer;
-#endif
- public:
-  explicit DeviceMgrImp(device_id_t device_id)
-      :  
-#ifdef HAVE_SHM
-	      shmFd(-1), h(NULL), data(NULL), reader_buffer(NULL),
-#endif
-	device_id(device_id),
-        device_tgt({static_cast<pi_dev_id_t>(device_id), 0xffff}),
-        server_config(default_server_config),
-        packet_io(device_id, &server_config),
-        digest_mgr(device_id),
-        idle_timeout_buffer(device_id),
-        watch_port_enforcer(device_tgt, &access_arbitration) {
-#ifdef HAVE_SHM
-          snprintf(shmpath,512, "/p4_v1_runtime_local_%ld", device_id);
-          shmFd = shm_open(shmpath, O_CREAT | O_TRUNC | O_RDWR, S_IRUSR | S_IWUSR);
-          if (shmFd == -1)
-            errExit("shm_open");
-
-          if (ftruncate(shmFd, SHM_SZ) == -1)
-            errExit("ftruncate");
-          void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE, MAP_LOCKED|MAP_SHARED, shmFd, 0);
-          if (shmp == MAP_FAILED)
-            errExit("mmap");
-
-          reader_buffer = (pi::fe::local::Update*) calloc(sizeof(pi::fe::local::Update), MAX_SERVER_ENTRIES);
-          h = static_cast<pi::fe::local::TableHeaders*>(shmp);
-          data = (pi::fe::local::Update*)(h+1);
-#endif // HAVE_SHM
-	}
-
-  ~DeviceMgrImp() {
-#ifdef HAVE_SHM
-    if (h) {
-       munmap((void*)h, SHM_SZ);
-    }
-    if (shmFd != -1)
-       shm_unlink(shmpath);
-    if (reader_buffer) {
-       free(reader_buffer);
-    }
-#endif // HAVE_SHM
-
-    pi_remove_device(device_id);
-  }
-
-  DeviceMgrImp(const DeviceMgrImp &) = delete;
-  DeviceMgrImp &operator=(const DeviceMgrImp &) = delete;
-  DeviceMgrImp(DeviceMgrImp &&) = delete;
-  DeviceMgrImp &operator=(DeviceMgrImp &&) = delete;
-
-#ifdef HAVE_SHM
-  Status writeLocal() {
+  static void writeLocal(pi::fe::local::TableHeaders *h,
+  pi::fe::local::Update *data,
+  pi::fe::local::Update * reader_buffer,
+  std::atomic<bool> * done) {
         Status status;
         status.set_code(Code::OK);
-        while(1 /* TODO: device_on() */) {
+        while(*done == false) {
             // Consume from SHM
             // Until there is data.
             uint64_t newID;
@@ -696,9 +640,77 @@ class DeviceMgrImp {
 
 	    pi::fe::local::SendAck(h, newID);
         }
-        return status;
+        return;
     }
 #endif
+
+class DeviceMgrImp {
+ private:
+#ifdef HAVE_SHM
+    char shmpath[512];
+    int shmFd;
+    pi::fe::local::TableHeaders *h;
+    pi::fe::local::Update *data;
+    pi::fe::local::Update * reader_buffer;
+    std::thread writerThread;
+    std::atomic<bool> done;
+#endif
+ public:
+  explicit DeviceMgrImp(device_id_t device_id)
+      :  
+#ifdef HAVE_SHM
+	      shmFd(-1), h(NULL), data(NULL), reader_buffer(NULL), done(false),
+#endif
+	device_id(device_id),
+        device_tgt({static_cast<pi_dev_id_t>(device_id), 0xffff}),
+        server_config(default_server_config),
+        packet_io(device_id, &server_config),
+        digest_mgr(device_id),
+        idle_timeout_buffer(device_id),
+        watch_port_enforcer(device_tgt, &access_arbitration) {
+#ifdef HAVE_SHM
+          snprintf(shmpath,512, "/p4_v1_runtime_local_%ld", device_id);
+          shmFd = shm_open(shmpath, O_CREAT | O_TRUNC | O_RDWR, S_IRUSR | S_IWUSR);
+          if (shmFd == -1)
+            errExit("shm_open");
+
+          if (ftruncate(shmFd, SHM_SZ) == -1)
+            errExit("ftruncate");
+          void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE, MAP_LOCKED|MAP_SHARED, shmFd, 0);
+          if (shmp == MAP_FAILED)
+            errExit("mmap");
+
+          reader_buffer = (pi::fe::local::Update*) calloc(sizeof(pi::fe::local::Update), MAX_SERVER_ENTRIES);
+          h = static_cast<pi::fe::local::TableHeaders*>(shmp);
+          data = (pi::fe::local::Update*)(h+1);
+
+          // Create writer thread
+          writerThread = std::thread(writeLocal, h, data, reader_buffer, &done);
+#endif // HAVE_SHM
+	}
+
+  ~DeviceMgrImp() {
+#ifdef HAVE_SHM
+    done = true;
+    writerThread.join();
+
+    if (h) {
+       munmap((void*)h, SHM_SZ);
+    }
+    if (shmFd != -1)
+       shm_unlink(shmpath);
+    if (reader_buffer) {
+       free(reader_buffer);
+    }
+#endif // HAVE_SHM
+
+    pi_remove_device(device_id);
+  }
+
+  DeviceMgrImp(const DeviceMgrImp &) = delete;
+  DeviceMgrImp &operator=(const DeviceMgrImp &) = delete;
+  DeviceMgrImp(DeviceMgrImp &&) = delete;
+  DeviceMgrImp &operator=(DeviceMgrImp &&) = delete;
 
   Status p4_change(const p4v1::ForwardingPipelineConfig &config_proto_new,
                    pi_p4info_t *p4info_new) {
@@ -3456,12 +3468,6 @@ Status
 DeviceMgr::write(const p4v1::WriteRequest &request) {
   return pimp->write(request);
 }
-
-#ifdef HAVE_SHM
-Status DeviceMgr::writeLocal() {
-  return pimp->writeLocal();
-}
-#endif
 
 Status
 DeviceMgr::read(const p4v1::ReadRequest &request,

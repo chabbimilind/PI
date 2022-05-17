@@ -193,9 +193,6 @@ class DeviceMgr {
       p4::v1::ForwardingPipelineConfig *config);
 
   Status write(const p4::v1::WriteRequest &request);
-#ifdef HAVE_SHM
-  Status writeLocal();
-#endif
 
   Status read(const p4::v1::ReadRequest &request,
               p4::v1::ReadResponse *response) const;
