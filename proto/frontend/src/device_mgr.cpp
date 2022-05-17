@@ -208,7 +208,7 @@ namespace fe {
           return itr->second;
         }
         char shmpath[512];
-        snprintf(shmpath, 512, "/p4/v1/runtime/local/%ld", dev);
+        snprintf(shmpath, 512, "/p4_v1_runtime_local_%ld", dev);
         /* Open the existing shared memory object and map it
           into the caller's address space. */
         int fd = shm_open(shmpath, O_RDWR, 0);
@@ -619,7 +619,7 @@ class DeviceMgrImp {
         idle_timeout_buffer(device_id),
         watch_port_enforcer(device_tgt, &access_arbitration) {
 #ifdef HAVE_SHM
-          snprintf(shmpath,512, "/p4/v1/runtime/local/%ld", device_id);
+          snprintf(shmpath,512, "/p4_v1_runtime_local_%ld", device_id);
           shmFd = shm_open(shmpath, O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
           if (shmFd == -1)
             errExit("shm_open");
