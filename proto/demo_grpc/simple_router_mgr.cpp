@@ -28,10 +28,16 @@
 
 #include "p4/tmp/p4config.grpc.pb.h"
 
+
 #include <future>
 #include <limits>
+#include <iostream>
+#include <chrono>
+#include <chrono>
+#include <ratio>
 
 #include "PI/proto/p4info_to_and_from_proto.h"  // for p4info_serialize_to_proto
+#include "PI/frontends/proto/device_mgr.h"
 
 #include "google/rpc/code.pb.h"
 
@@ -41,6 +47,7 @@ namespace p4configv1 = ::p4::config::v1;
 using grpc::ClientContext;
 using grpc::Status;
 using grpc::ClientReaderWriter;
+using namespace std;
 
 #define CPU_PORT static_cast<uint16_t>(64)
 
@@ -281,6 +288,57 @@ SimpleRouterMgr::assign(const std::string &config_buffer,
   packet_io_client->send_init(dev_id);
   packet_io_client->recv_packet_in();
 
+
+  std::cout <<"\n Start SHM work\n";
+  fflush(stdout);
+  p4::v1::TableEntry match_action_entry;
+  //fabric->add_next_simple_bridge(3, 30, match_action_entry);
+  match_action_entry.set_table_id(100);
+  for(int i = 0; i <   MAX_FIELD_MATCHES; i++) {
+	  auto f = match_action_entry.add_match();
+		  f->set_field_id(i);
+	  f->mutable_exact()->set_value("0123456789012345");
+  }
+
+  auto act = match_action_entry.mutable_action()->mutable_action();
+  act->set_action_id(100);
+  for(int i = 0; i <   MAX_PARAMS; i++) {
+	  auto param = act->add_params();
+	  param->set_value("0123456789012345");
+	  param->set_param_id(i);
+  }
+  {
+  p4::v1::WriteRequest request;
+  request.set_device_id(dev_id);
+
+  auto start_time = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
+  auto start_create_request_time = start_time;
+  Status status;
+  int req_num = 1;
+  int entries = 50000000;
+  for (int cur_req = 0; cur_req < req_num; cur_req++) {
+	  start_create_request_time = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
+	  for (int i = 0; i < entries; i++) {
+		  auto update = request.add_updates();
+		  update->set_type(p4::v1::Update_Type_INSERT);
+		  auto entity = update->mutable_entity();
+		  entity->set_allocated_table_entry(&match_action_entry);
+		  entity->release_table_entry();
+	  }
+
+  std::cout <<"\n Start SHM copy work\n";
+  fflush(stdout);
+	  auto end_create_request_time = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
+	  int total_create_request_time = end_create_request_time - start_create_request_time;
+	  pi::fe::local::Write(request);
+	  int write_time = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
+	  int total_write_request_time = write_time - end_create_request_time;
+
+	  std::cout << "creation time " << (total_create_request_time)<<  ", creation rate = " << 1000.0 * double(entries * req_num) / (total_create_request_time);
+	  std::cout << "write time " << (total_write_request_time)<<  ", write rate = " << 1000.0 * double(entries * req_num) / (total_write_request_time);
+	  fflush(stdout);
+  }
+  }
   return 0;
 }
 

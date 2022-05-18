@@ -220,12 +220,12 @@ namespace fe {
         void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE,
                                   MAP_SHARED|MAP_LOCKED, fd, 0);
 
-        // unlink immediately. No need to keep it around.
-        shm_unlink(shmpath);
         if (shmp == MAP_FAILED) {
             perror("mmap");
             return 0;
         }
+	// Close the file immediately. No need to keep it around.
+	close(fd);
         devShmMap[dev] = shmp;
         return shmp;
     }
@@ -237,7 +237,7 @@ namespace fe {
         }
     }
 
-    grpc::Status WriteLocal(const p4::v1::WriteRequest & request) {
+    grpc::Status Write(const p4::v1::WriteRequest & request) {
         // Get SHM
         void *shmp = GetDeviceSHM(request.device_id());
         if (shmp == 0)

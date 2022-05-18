@@ -7,13 +7,13 @@ currently used to run CI tests."
 # Default to using 2 make jobs, which is a good default for CI. If you're
 # building locally or you know there are more cores available, you may want to
 # override this.
-ARG MAKEFLAGS=-j2
+ARG MAKEFLAGS=-j8
 
 # Select the type of image we're building. Use `build` for a normal build, which
 # is optimized for image size. Use `test` if this image will be used for
 # testing; in this case, the source code and build-only dependencies will not be
 # removed from the image.
-ARG IMAGE_TYPE=build
+ARG IMAGE_TYPE=test
 
 # Select the compiler to use.
 # We install the default version of GCC (GCC 9), as well as clang 8 and clang 10.
@@ -36,7 +36,13 @@ ENV PI_DEPS automake \
             libpcap-dev \
             libmicrohttpd-dev \
             doxygen \
-            valgrind
+            valgrind \
+		vim \
+		git-core \
+		libmicrohttpd-dev \
+		iproute2 \
+		mininet \
+		python3-pip
 ENV PI_RUNTIME_DEPS libboost-system1.71.0 \
                     libboost-thread1.71.0 \
                     libpcap0.8 \
@@ -49,7 +55,8 @@ WORKDIR /PI/
 RUN apt-get update && \
     apt-get install -y --no-install-recommends $PI_DEPS $PI_RUNTIME_DEPS && \
     ./autogen.sh && \
-    ./configure --enable-Werror --with-bmv2 --with-proto --with-cli --with-internal-rpc --with-sysrepo && \
+    pip3 install mininet && \
+    ./configure --enable-Werror --with-bmv2 --with-proto --with-cli --with-internal-rpc --with-sysrepo --enable-shm && \
     ./proto/sysrepo/install_yangs.sh && \
     make && \
     make install-strip && \

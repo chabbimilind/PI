@@ -143,7 +143,7 @@ namespace local {
     };
 
 
-    grpc::Status WriteLocal(const p4::v1::WriteRequest &request);
+    grpc::Status Write(const p4::v1::WriteRequest &request);
 
     typedef struct TableHeaders {
         // The head pointer from where the consumer reads data

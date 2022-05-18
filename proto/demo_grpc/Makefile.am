@@ -1,5 +1,6 @@
 ACLOCAL_AMFLAGS = ${ACLOCAL_FLAGS} -I m4
 
+
 AM_CPPFLAGS = \
 -I$(top_srcdir)/../include \
 -I$(top_srcdir)/frontend \
@@ -9,7 +10,13 @@ AM_CPPFLAGS = \
 -I$(top_srcdir)/p4info
 
 AM_CXXFLAGS = -Wall -Werror -Wno-unused-command-line-argument
+if WANT_SHM
+AM_CPPFLAGS += -DHAVE_SHM
+endif
 
+if WANT_SHM
+AM_CXXFLAGS += -fopenmp
+endif
 noinst_PROGRAMS = controller pi_server_dummy test_perf
 
 pi_server_dummy_SOURCES = pi_server_main.cpp
@@ -57,5 +64,11 @@ $(top_builddir)/../src/libpip4info.la \
 $(top_builddir)/libpiprotogrpc.la \
 $(top_builddir)/libpiprotobuf.la \
 $(top_builddir)/p4info/libpiconvertproto.la \
+$(top_builddir)/server/libpigrpcserver.la \
+$(top_builddir)/frontend/libpifeproto.la \
+$(top_builddir)/libpiprotogrpc.la \
+$(top_builddir)/libpiprotobuf.la \
+$(top_builddir)/../src/libpiall.la \
+$(top_builddir)/../targets/dummy/libpi_dummy.la \
 -lmicrohttpd $(BOOST_SYSTEM_LIB) \
 $(PROTOBUF_LIBS) $(GRPC_LIBS)
