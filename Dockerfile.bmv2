@@ -42,7 +42,8 @@ ENV PI_DEPS automake \
 		libmicrohttpd-dev \
 		iproute2 \
 		mininet \
-		python3-pip
+		python3-pip \
+		gdb 
 ENV PI_RUNTIME_DEPS libboost-system1.71.0 \
                     libboost-thread1.71.0 \
                     libpcap0.8 \
