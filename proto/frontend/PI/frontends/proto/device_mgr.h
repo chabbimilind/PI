@@ -64,7 +64,7 @@
 #endif
 #define INVALID_SEND_CNT (0)
 #define INVALID_UPDATE (-1)
-#define SHM_VALIDATE
+//#define SHM_VALIDATE
 #endif // HAVE_SHM
 
 

@@ -208,7 +208,7 @@ namespace fe {
 		  const ::p4::v1::TableEntry & table = entity.table_entry();
 		  myTableEntry.table_id_ = table.table_id();
 		  myTableEntry.numFields = table.match_size();
-		  for (int m = 0; m < std::min(table.match_size(), MAX_FIELD_MATCHES) ; m++) 
+		  for (int m = 0; m < std::min(table.match_size(), MAX_FIELD_MATCHES) ; m++) {
 			  const ::p4::v1::FieldMatch &match = table.match(m);
 			  FieldMatch &myMatch = myTableEntry.match_[m];
 			  myMatch.field_id_ = match.field_id();
