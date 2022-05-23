@@ -91,218 +91,258 @@ namespace fe {
 #ifdef HAVE_SHM
   namespace local {
     // WaitMyTurn causes the sender to wait until it is its turn: e.g., two senders trying to send.
-    static uint64_t WaitMyTurn(pi::fe::local::TableHeaders *h, uint64_t numUpdates) {
-        while (1) {
-            uint64_t lastRecvd = h->lastRecvd.load(memory_order_acquire);
-            uint64_t lastSent = h->lastSent.load(memory_order_acquire);
-            if (lastRecvd != lastSent)  {
-                // Wait for the lastReceived to become lastSent.
-                // TODO: use futex to sleep rather than burning CPU.
-                continue;
-            }
-            // We saw lastRecvd == lastSent.
-            if (h->lastSent.compare_exchange_strong(lastRecvd, lastRecvd+1)) {
-                // Declare how many elements
-                h->lastSendCnt.store(numUpdates, memory_order_release);
-                return lastRecvd + 1;
-            }
-        }
-    }
+	  static uint64_t WaitMyTurn(pi::fe::local::TableHeaders *h, uint64_t numUpdates) {
+		  if (pthread_mutex_lock(&h->writerMutex)) {
+			  errExit("pthread_mutex_lock");    
+		  }
 
-    // WaitForAck causes the sender to wait until the receiver has consumed all data and sent an ACK.
-    static void WaitForAck(pi::fe::local::TableHeaders *h, uint64_t lastId) {
-        // Until ACK from consumer: consumer increments lastRecvd to lastRecvd+1.
-        while (lastId > h->lastRecvd.load(memory_order_acquire)) {
-            // TODO: may be use pause().
-            // TODO: use futex to wait rather than burn CPU cycles.
-        }
-        // TODO: send some retcode from the receiver.
-    }
+		  if (pthread_mutex_lock(&h->devMutex)) {
+			  errExit("pthread_mutex_lock");    
+		  }
+		  // TODO: if h->done, we will hang forever.
+		  assert(h->lastSendCnt==INVALID_SEND_CNT);
+		  assert(h->lastSent==h->lastRecvd);
+		  assert(h->head == h->tail);
+		  h->lastSendCnt = numUpdates;
+		  uint64_t lastRecvd = h->lastRecvd.load(memory_order_acquire);
+		  h->lastSent = (lastRecvd+1);
+		  pthread_cond_signal(&h->condVar);
+		  pthread_mutex_unlock(&h->devMutex);
+		  return lastRecvd+1;
+	  }
 
-    // WaitForData causes the receiver to wait until some data is ready.
-    static  uint64_t WaitForData(pi::fe::local::TableHeaders *h, uint64_t &newID) {
-        // Until there is data.
-        uint64_t lastId = h->lastRecvd.load(memory_order_acquire);
-        while (lastId == (newID=h->lastSent.load(memory_order_acquire))) {
-            // TODO: may be use pause().
-            // TODO: use futex to wait rather than burn CPU cycles.
-        }
-        // How many data elements?
-        uint64_t count =  INVALID_SEND_CNT;
-        // Wait until a legal sendCount is set.
-        while (INVALID_SEND_CNT == (count=h->lastSendCnt.load(memory_order_acquire))) {
-            // TODO: may be use pause()
-        }
-	return count;
-    }
+	  // WaitForAck causes the sender to wait until the receiver has consumed all data and sent an ACK.
+	  static void WaitForAck(pi::fe::local::TableHeaders *h, uint64_t lastId) {
+		  // Until ACK from consumer: consumer increments lastRecvd to lastRecvd+1.
+		  while (lastId > h->lastRecvd.load(memory_order_acquire)) {
+			  // TODO: may be use pause().
+			  // TODO: use futex to wait rather than burn CPU cycles.
+		  }
+		  // TODO: send some retcode from the receiver.
+	  }
 
-    // SendAck indicates the completion of server-side data consumption.
-    static void SendAck(pi::fe::local::TableHeaders *h, uint64_t newId) {
-        // Reset lastSendCnt.
-        h->lastSendCnt.store(INVALID_SEND_CNT, memory_order_release);
-        // Reset head and tail.
-        h->head.store(0, memory_order_release);
-        h->tail.store(0, memory_order_release);
-        // Final ACK to the waiting sender. 
-        // TODO: May send some ret code.
-        h->lastRecvd.store(newId, memory_order_release);
-    }
+	  // WaitForData causes the receiver to wait until some data is ready.
+	  static  uint64_t WaitForData(pi::fe::local::TableHeaders *h, uint64_t &newID) {
+		  if (pthread_mutex_lock(&h->devMutex)) {
+			  errExit("pthread_mutex_lock");
+		  }
+		  while (1) {
+			  // Prioritize dev shutdown over data.
+			  if (h->done) {
+				  pthread_mutex_unlock(&h->devMutex);
+				  pthread_exit(0);
+			  }
+			  uint64_t itemCount = h->lastSendCnt;
+			  if (itemCount == INVALID_SEND_CNT) {
+				  pthread_cond_wait(&h->condVar, &h->devMutex);
+				  continue;
+			  }
+			  newID=h->lastSent;
+			  pthread_mutex_unlock(&h->devMutex);
+			  return itemCount;
+		  }
+	  }
 
-    // Serialize walks the p4::v1::Update protobuf and serializes it
-    // into C-struct pi::fe::local::Update.
-    // TODO: counters and meters if needed.
-    static void Serialize(const p4::v1::Update &update, pi::fe::local::Update &myUpdate) {
-        if (!update.has_entity()) {
-            myUpdate.type = INVALID_UPDATE;
-            return;
-        }
-        auto entity = update.entity();
-        if (!entity.has_table_entry()) {
-            myUpdate.type = INVALID_UPDATE;
-            return;
-        }
-        myUpdate.type = update.type();
-        TableEntry & myTableEntry = myUpdate.t;
-        auto table = entity.table_entry();
-        myTableEntry.table_id_ = table.table_id();
-        myTableEntry.numFields = table.match_size();
-        for (int m = 0; m < table.match_size(); m++) {
-            auto match = table.match(m);
-            FieldMatch &myMatch = myTableEntry.match_[m];
-            myMatch.field_id_ = match.field_id();
-            myMatch.underlyingType = match.field_match_type_case();
-            switch (match.field_match_type_case())
-            {
-            case ::p4::v1::FieldMatch::FieldMatchTypeCase::kExact: {
-                auto exact = match.exact();
-                strncpy(myMatch.exact_.value, exact.value().c_str(), MAX_VALUE_STR);
-                break;
-            }
-            case ::p4::v1::FieldMatch::FieldMatchTypeCase::kTernary: // TODO
-            case ::p4::v1::FieldMatch::FieldMatchTypeCase::kLpm: // TODO
-            case ::p4::v1::FieldMatch::FieldMatchTypeCase::kRange: // TODO
-            case ::p4::v1::FieldMatch::FieldMatchTypeCase::kOptional: // TODO
-            case ::p4::v1::FieldMatch::FieldMatchTypeCase::kOther: // TODO
-            default: // TODO
-                break;
-            }
-        }
-        auto action = table.action().action();
-        Action & myaction = myTableEntry.action_;
-        myaction.action_id_ = action.action_id();
-        myaction.num_params_ = action.params_size();
-        for (int m = 0; m < action.params_size(); m++) {
-            auto param = action.params(m);
-            Action_Param &myParam = myaction.params_[m];
-            myParam.param_id_ = param.param_id();
-            strncpy(myParam.value, param.value().c_str(), MAX_VALUE_STR);
-        }
-    }
+	  // SendAck indicates the completion of server-side data consumption.
+	  static void SendAck(pi::fe::local::TableHeaders *h, uint64_t newId) {
+		  // Reset lastSendCnt.
+		  h->lastSendCnt = INVALID_SEND_CNT;
+		  // Reset head and tail.
+		  h->head.store(0, memory_order_release);
+		  h->tail.store(0, memory_order_release);
+		  // Final ACK to the waiting sender. 
+		  // TODO: May send some ret code.
+		  h->lastRecvd.store(newId, memory_order_release);
+	  }
 
-    static std::mutex devShmMapMutex;
-    static std::unordered_map<uint64_t, void*> devShmMap;
+	  static void InitSHMMutex(pthread_mutex_t *mutex) {
+		  pthread_mutexattr_t writerMutexAttr;
+		  if (pthread_mutexattr_init(&writerMutexAttr)) {
+			  errExit("pthread_mutexattr_init");
+		  }
+		  if (pthread_mutexattr_setpshared(&writerMutexAttr, PTHREAD_PROCESS_SHARED)) {
+			  errExit("pthread_mutexattr_setpshared");
+		  }
+		  if (pthread_mutex_init(mutex, &writerMutexAttr)) {
+			  errExit("pthread_mutex_init");
+		  }
+		  if (pthread_mutexattr_destroy(&writerMutexAttr)) {
+			  errExit("pthread_mutexattr_destroy");
+		  }
+	  }
 
-    void * GetDeviceSHM(uint64_t dev) {
-        const std::lock_guard<std::mutex> lock(devShmMapMutex);
-        auto itr = devShmMap.find(dev);
-        if (itr != devShmMap.end()) {
-          return itr->second;
-        }
-        char shmpath[512];
-        snprintf(shmpath, 512, "/p4_v1_runtime_local_%ld", dev);
-        /* Open the existing shared memory object and map it
-          into the caller's address space. */
-        int fd = shm_open(shmpath, O_RDWR, 0);
-        if (fd == -1) {
-            perror("shm_open");
-            return 0;
-        }
-        void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE,
-                                  MAP_SHARED|MAP_LOCKED, fd, 0);
 
-        if (shmp == MAP_FAILED) {
-            perror("mmap");
-            return 0;
-        }
-	// Close the file immediately. No need to keep it around.
-	close(fd);
-        devShmMap[dev] = shmp;
-        return shmp;
-    }
-    
-    __attribute__((destructor)) static void CleanupDeviceShm() {
-        const std::lock_guard<std::mutex> lock(devShmMapMutex);
-        for (auto &item : devShmMap) {
-          munmap(item.second, SHM_SZ);
-        }
-    }
+	  static void InitSHMCondVar(pthread_cond_t *condVar) {
+		  pthread_condattr_t condAttr;
+		  if (pthread_condattr_init(&condAttr)) {
+			  errExit("pthread_condattr_init");
+		  }
+		  if (pthread_condattr_setpshared(&condAttr, PTHREAD_PROCESS_SHARED)) {
+			  errExit("pthread_condattr_setpshared");
+		  }
+		  if (pthread_cond_init(condVar, &condAttr)) {
+			  errExit("pthread_cond_init");
+		  }
+		  if (pthread_condattr_destroy(&condAttr)) {
+			  errExit("pthread_condattr_destroy");
+		  }
+	  }
+	  // Serialize walks the p4::v1::Update protobuf and serializes it
+	  // into C-struct pi::fe::local::Update.
+	  // TODO: counters and meters if needed.
+	  static void Serialize(const p4::v1::Update &update, pi::fe::local::Update &myUpdate) {
+		  if (!update.has_entity()) {
+			  myUpdate.type = INVALID_UPDATE;
+			  return;
+		  }
+		  auto entity = update.entity();
+		  if (!entity.has_table_entry()) {
+			  myUpdate.type = INVALID_UPDATE;
+			  return;
+		  }
+		  myUpdate.type = update.type();
+		  TableEntry & myTableEntry = myUpdate.t;
+		  auto table = entity.table_entry();
+		  myTableEntry.table_id_ = table.table_id();
+		  myTableEntry.numFields = table.match_size();
+		  for (int m = 0; m < table.match_size(); m++) {
+			  auto match = table.match(m);
+			  FieldMatch &myMatch = myTableEntry.match_[m];
+			  myMatch.field_id_ = match.field_id();
+			  myMatch.underlyingType = match.field_match_type_case();
+			  switch (match.field_match_type_case())
+			  {
+				  case ::p4::v1::FieldMatch::FieldMatchTypeCase::kExact: {
+												 auto exact = match.exact();
+												 strncpy(myMatch.exact_.value, exact.value().c_str(), MAX_VALUE_STR);
+												 break;
+											 }
+				  case ::p4::v1::FieldMatch::FieldMatchTypeCase::kTernary: // TODO
+				  case ::p4::v1::FieldMatch::FieldMatchTypeCase::kLpm: // TODO
+				  case ::p4::v1::FieldMatch::FieldMatchTypeCase::kRange: // TODO
+				  case ::p4::v1::FieldMatch::FieldMatchTypeCase::kOptional: // TODO
+				  case ::p4::v1::FieldMatch::FieldMatchTypeCase::kOther: // TODO
+				  default: // TODO
+											 break;
+			  }
+		  }
+		  auto action = table.action().action();
+		  Action & myaction = myTableEntry.action_;
+		  myaction.action_id_ = action.action_id();
+		  myaction.num_params_ = action.params_size();
+		  for (int m = 0; m < action.params_size(); m++) {
+			  auto param = action.params(m);
+			  Action_Param &myParam = myaction.params_[m];
+			  myParam.param_id_ = param.param_id();
+			  strncpy(myParam.value, param.value().c_str(), MAX_VALUE_STR);
+		  }
+	  }
 
-    grpc::Status Write(const p4::v1::WriteRequest & request) {
-        // Get SHM
-        void *shmp = GetDeviceSHM(request.device_id());
-        if (shmp == 0)
-            errExit("GetDeviceSHM");
+	  static std::mutex devShmMapMutex;
+	  static std::unordered_map<uint64_t, void*> devShmMap;
 
-        int numUpdates = request.updates_size();
-        int batchSize = pi::fe::local::_shmMaxEntries/MAX_BATCHES;
-        int numBatches = (numUpdates+batchSize-1)/batchSize;
+	  void * GetDeviceSHM(uint64_t dev) {
+		  const std::lock_guard<std::mutex> lock(devShmMapMutex);
+		  auto itr = devShmMap.find(dev);
+		  if (itr != devShmMap.end()) {
+			  return itr->second;
+		  }
+		  char shmpath[512];
+		  snprintf(shmpath, 512, "/p4_v1_runtime_local_%ld", dev);
+		  /* Open the existing shared memory object and map it
+		     into the caller's address space. */
+		  int fd = shm_open(shmpath, O_RDWR, 0);
+		  if (fd == -1) {
+			  perror("shm_open");
+			  return 0;
+		  }
+		  void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE,
+				  MAP_SHARED|MAP_LOCKED, fd, 0);
 
-        // Wait for your turn.
-        pi::fe::local::TableHeaders *h = static_cast<pi::fe::local::TableHeaders*>(shmp);
-        pi::fe::local::Update *data = (pi::fe::local::Update*)(h+1);   
+		  if (shmp == MAP_FAILED) {
+			  perror("mmap");
+			  return 0;
+		  }
+		  // Close the file immediately. No need to keep it around.
+		  close(fd);
+		  devShmMap[dev] = shmp;
+		  return shmp;
+	  }
 
-        // Until it is my chance to publish.
-        uint64_t lastId = pi::fe::local::WaitMyTurn(h, numUpdates); 
-        // Now we own the SHM.
-        uint64_t curTail = h->tail.load(memory_order_acquire);
+	  __attribute__((destructor)) static void CleanupDeviceShm() {
+		  const std::lock_guard<std::mutex> lock(devShmMapMutex);
+		  for (auto &item : devShmMap) {
+			  munmap(item.second, SHM_SZ);
+		  }
+	  }
 
-        #pragma omp parallel 
-        {
-            int me = omp_get_thread_num();
-            int workers = omp_get_num_threads();
-            for (int batch = 0; batch < numBatches; batch ++) {
-                // Logic to group updates() and assign to each thread.
-                int batchStart = batchSize * batch;
-                int batchEnd = std::min(numUpdates, batchStart + batchSize);
-                uint64_t elemsInbatch = batchEnd - batchStart;
-                int perWorker = ceil(1.0 * elemsInbatch/workers);
-                int workerStart = batchStart + me * perWorker;
-                int workerEnd = std::min(workerStart + perWorker, batchEnd);
-                if ( (workerStart < batchEnd) && (workerEnd > batchEnd)) {
-                    workerEnd = batchEnd;
-                }
+	  grpc::Status Write(const p4::v1::WriteRequest & request) {
+		  // Get SHM
+		  void *shmp = GetDeviceSHM(request.device_id());
+		  if (shmp == 0)
+			  errExit("GetDeviceSHM");
 
-                // Wait until there is space.
-                if (me == 0) {
-                    uint64_t lastHead = h->head.load(memory_order_acquire);
-                    for (;;) {
-                        if (curTail - lastHead  + elemsInbatch < pi::fe::local::_shmMaxEntries) {
-                            break;
-                        } else {
-                            lastHead = h->head.load(memory_order_acquire);
-                        }
-                    }
-                }
-                #pragma omp barrier
+		  int numUpdates = request.updates_size();
+		  int batchSize = pi::fe::local::_shmMaxEntries/MAX_BATCHES;
+		  int numBatches = (numUpdates+batchSize-1)/batchSize;
 
-                // Serialize the protobuf into SHM.
-                for (int i = workerStart; i < workerEnd; i++) {
-                    int shmPosition = i % pi::fe::local::_shmMaxEntries;
-                    auto update = request.updates(i);
-		    pi::fe::local::Serialize(update, data[shmPosition]);
-                }
-                #pragma omp barrier
+		  // Wait for your turn.
+		  pi::fe::local::TableHeaders *h = static_cast<pi::fe::local::TableHeaders*>(shmp);
+		  pi::fe::local::Update *data = (pi::fe::local::Update*)(h+1);   
 
-                // Update tail to indicate the presense of another chunk of data to the receiver.
-                if (me == 0) {
-                    h->tail.fetch_add(elemsInbatch, memory_order_release);
-                    curTail += elemsInbatch;
-                }
-            }
-        }
-        pi::fe::local::WaitForAck(h, lastId);
-        return grpc::Status::OK;
-    }
+		  // Until it is my chance to publish.
+		  uint64_t lastId = pi::fe::local::WaitMyTurn(h, numUpdates); 
+		  // Now we own the SHM.
+		  uint64_t curTail = h->tail.load(memory_order_acquire);
+
+#pragma omp parallel 
+		  {
+			  int me = omp_get_thread_num();
+			  int workers = omp_get_num_threads();
+			  for (int batch = 0; batch < numBatches; batch ++) {
+				  // Logic to group updates() and assign to each thread.
+				  int batchStart = batchSize * batch;
+				  int batchEnd = std::min(numUpdates, batchStart + batchSize);
+				  uint64_t elemsInbatch = batchEnd - batchStart;
+				  int perWorker = ceil(1.0 * elemsInbatch/workers);
+				  int workerStart = batchStart + me * perWorker;
+				  int workerEnd = std::min(workerStart + perWorker, batchEnd);
+				  if ( (workerStart < batchEnd) && (workerEnd > batchEnd)) {
+					  workerEnd = batchEnd;
+				  }
+
+				  // Wait until there is space.
+				  if (me == 0) {
+					  uint64_t lastHead = h->head.load(memory_order_acquire);
+					  for (;;) {
+						  if (curTail - lastHead  + elemsInbatch < pi::fe::local::_shmMaxEntries) {
+							  break;
+						  } else {
+							  lastHead = h->head.load(memory_order_acquire);
+						  }
+					  }
+				  }
+#pragma omp barrier
+
+				  // Serialize the protobuf into SHM.
+				  for (int i = workerStart; i < workerEnd; i++) {
+					  int shmPosition = i % pi::fe::local::_shmMaxEntries;
+					  auto update = request.updates(i);
+					  pi::fe::local::Serialize(update, data[shmPosition]);
+				  }
+#pragma omp barrier
+
+				  // Update tail to indicate the presense of another chunk of data to the receiver.
+				  if (me == 0) {
+					  h->tail.fetch_add(elemsInbatch, memory_order_release);
+					  curTail += elemsInbatch;
+				  }
+			  }
+		  }
+		  pi::fe::local::WaitForAck(h, lastId);
+		  pthread_mutex_unlock(&h->writerMutex);
+		  return grpc::Status::OK;
+	  }
   }
 #endif // HAVE_SHM
 
@@ -598,50 +638,49 @@ struct PIActProfEntries {
 }  // namespace
 
 #ifdef HAVE_SHM
-  static void writeLocal(pi::fe::local::TableHeaders *h,
-  pi::fe::local::Update *data,
-  pi::fe::local::Update * reader_buffer,
-  std::atomic<bool> * done) {
-        Status status;
-        status.set_code(Code::OK);
-        while(*done == false) {
-            // Consume from SHM
-            // Until there is data.
-            uint64_t newID;
-            uint64_t count = pi::fe::local::WaitForData(h, newID);
-            uint64_t lastTail = h->tail.load(memory_order_acquire);
-            uint64_t curHead = h->head.load(memory_order_acquire);
-            uint64_t end = curHead + count;
-            for (; curHead < end; ) {
-                if (curHead >= lastTail) {
-                    // Can never be >. Just the ! of curHead < lastTail condition.
-                    lastTail = h->tail.load(memory_order_acquire);
-                    continue;
-                }
+static void writeLocal(pi::fe::local::TableHeaders *h,
+		pi::fe::local::Update *data,
+		pi::fe::local::Update * reader_buffer) {
+	Status status;
+	status.set_code(Code::OK);
+	while(1) {
+		// Consume from SHM
+		// Until there is data.
+		uint64_t newID;
+		uint64_t count = pi::fe::local::WaitForData(h, newID); // May pthread_exit()
+		uint64_t lastTail = h->tail.load(memory_order_acquire);
+		uint64_t curHead = h->head.load(memory_order_acquire);
+		uint64_t end = curHead + count;
+		for (; curHead < end; ) {
+			if (curHead >= lastTail) {
+				// Can never be >. Just the ! of curHead < lastTail condition.
+				lastTail = h->tail.load(memory_order_acquire);
+				continue;
+			}
 
-                // => (curHead < lastTail)
-                // Just to avoid compiler from optimizing the memcpy.
-                //auto buff = buffer.load(memory_order_relaxed);
-                // Consume in max chunk size of CONSUMER_SIZE.
-                for (uint64_t j = curHead; j < lastTail;) {
-                    auto remaining = min(MAX_SERVER_ENTRIES, lastTail-j);
-                    // If we wrap around the _shmMaxEntries buffer, we need to go multiple rounds.
-                    auto thisChunk = (j/pi::fe::local::_shmMaxEntries) == ((j+remaining-1)/pi::fe::local::_shmMaxEntries) ? remaining : (pi::fe::local::_shmMaxEntries - j%pi::fe::local::_shmMaxEntries);
-                    memcpy(reader_buffer, &data[j%pi::fe::local::_shmMaxEntries], thisChunk*sizeof(pi::fe::local::Update));
-                    // Use appropriate south bound batching API
-                    // TODO: status = table_write_local(buff, thisChunk);
-                    j += thisChunk;
-                }
-                h->head.store(lastTail, memory_order_release);
-                curHead = lastTail;
-                // to avoid the branch->continue at the loop beginning
-                lastTail = h->tail.load(memory_order_acquire);
-            }
+			// => (curHead < lastTail)
+			// Just to avoid compiler from optimizing the memcpy.
+			//auto buff = buffer.load(memory_order_relaxed);
+			// Consume in max chunk size of CONSUMER_SIZE.
+			for (uint64_t j = curHead; j < lastTail;) {
+				auto remaining = min(MAX_SERVER_ENTRIES, lastTail-j);
+				// If we wrap around the _shmMaxEntries buffer, we need to go multiple rounds.
+				auto thisChunk = (j/pi::fe::local::_shmMaxEntries) == ((j+remaining-1)/pi::fe::local::_shmMaxEntries) ? remaining : (pi::fe::local::_shmMaxEntries - j%pi::fe::local::_shmMaxEntries);
+				memcpy(reader_buffer, &data[j%pi::fe::local::_shmMaxEntries], thisChunk*sizeof(pi::fe::local::Update));
+				// Use appropriate south bound batching API
+				// TODO: status = table_write_local(buff, thisChunk);
+				j += thisChunk;
+			}
+			h->head.store(lastTail, memory_order_release);
+			curHead = lastTail;
+			// to avoid the branch->continue at the loop beginning
+			lastTail = h->tail.load(memory_order_acquire);
+		}
 
-	    pi::fe::local::SendAck(h, newID);
-        }
-        return;
-    }
+		pi::fe::local::SendAck(h, newID);
+	}
+	return;
+}
 #endif
 
 class DeviceMgrImp {
@@ -653,13 +692,12 @@ class DeviceMgrImp {
     pi::fe::local::Update *data;
     pi::fe::local::Update * reader_buffer;
     std::thread writerThread;
-    std::atomic<bool> done;
 #endif
  public:
   explicit DeviceMgrImp(device_id_t device_id)
       :  
 #ifdef HAVE_SHM
-	      shmFd(-1), h(NULL), data(NULL), reader_buffer(NULL), done(false),
+	      shmFd(-1), h(NULL), data(NULL), reader_buffer(NULL),
 #endif
 	device_id(device_id),
         device_tgt({static_cast<pi_dev_id_t>(device_id), 0xffff}),
@@ -669,39 +707,52 @@ class DeviceMgrImp {
         idle_timeout_buffer(device_id),
         watch_port_enforcer(device_tgt, &access_arbitration) {
 #ifdef HAVE_SHM
-          snprintf(shmpath,512, "/p4_v1_runtime_local_%ld", device_id);
-          shmFd = shm_open(shmpath, O_CREAT | O_TRUNC | O_RDWR, S_IRUSR | S_IWUSR);
-          if (shmFd == -1)
-            errExit("shm_open");
+		snprintf(shmpath,512, "/p4_v1_runtime_local_%ld", device_id);
+		shmFd = shm_open(shmpath, O_CREAT | O_TRUNC | O_RDWR, S_IRUSR | S_IWUSR);
+		if (shmFd == -1)
+			errExit("shm_open");
 
-          if (ftruncate(shmFd, SHM_SZ) == -1)
-            errExit("ftruncate");
-          void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE, MAP_LOCKED|MAP_SHARED, shmFd, 0);
-          if (shmp == MAP_FAILED)
-            errExit("mmap");
+		if (ftruncate(shmFd, SHM_SZ) == -1)
+			errExit("ftruncate");
+		void *shmp = mmap(NULL, SHM_SZ, PROT_READ | PROT_WRITE, MAP_LOCKED|MAP_SHARED, shmFd, 0);
+		if (shmp == MAP_FAILED)
+			errExit("mmap");
 
-          reader_buffer = (pi::fe::local::Update*) calloc(sizeof(pi::fe::local::Update), MAX_SERVER_ENTRIES);
-          h = static_cast<pi::fe::local::TableHeaders*>(shmp);
-          data = (pi::fe::local::Update*)(h+1);
+		reader_buffer = (pi::fe::local::Update*) calloc(sizeof(pi::fe::local::Update), MAX_SERVER_ENTRIES);
+		h = static_cast<pi::fe::local::TableHeaders*>(shmp);
+		data = (pi::fe::local::Update*)(h+1);
+		pi::fe::local::InitSHMMutex(&h->writerMutex);
+		pi::fe::local::InitSHMMutex(&h->devMutex);
+		pi::fe::local::InitSHMCondVar(&h->condVar);
+		h->done = false;
 
-          // Create writer thread
-          writerThread = std::thread(writeLocal, h, data, reader_buffer, &done);
+		// Create writer thread
+		writerThread = std::thread(writeLocal, h, data, reader_buffer);
 #endif // HAVE_SHM
 	}
 
   ~DeviceMgrImp() {
 #ifdef HAVE_SHM
-    done = true;
-    writerThread.join();
+	  if (pthread_mutex_lock(&h->devMutex)) {
+		  errExit("pthread_mutex_lock");    
+	  }
+	  h->done = true;
+	  pthread_cond_signal(&h->condVar);
+	  pthread_mutex_unlock(&h->devMutex);
+	  writerThread.join();
 
-    if (h) {
-       munmap((void*)h, SHM_SZ);
-    }
-    if (shmFd != -1)
-       shm_unlink(shmpath);
-    if (reader_buffer) {
-       free(reader_buffer);
-    }
+	  pthread_mutex_destroy(&h->writerMutex);
+	  pthread_mutex_destroy(&h->devMutex);
+	  pthread_cond_destroy(&h->condVar);
+
+	  if (h) {
+		  munmap((void*)h, SHM_SZ);
+	  }
+	  if (shmFd != -1)
+		  shm_unlink(shmpath);
+	  if (reader_buffer) {
+		  free(reader_buffer);
+	  }
 #endif // HAVE_SHM
 
     pi_remove_device(device_id);

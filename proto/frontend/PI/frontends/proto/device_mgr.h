@@ -152,10 +152,14 @@ namespace local {
         // The tail pointer into which the producer puts data
         std::atomic<uint64_t> tail;
         uint8_t dummy2[CACHE_LINE_SIZE];
-        // The monotonically increasing last sent count: always an even number.
-        std::atomic<uint64_t> lastSent;
+	pthread_mutex_t devMutex;
+	pthread_mutex_t writerMutex;
+	pthread_cond_t condVar;
+	bool done;
+        // The monotonically increasing last sent count.
+        uint64_t lastSent;
         // The count of elements in this WriteLocal set.
-        std::atomic<uint64_t> lastSendCnt;
+        uint64_t lastSendCnt;
         // The monotonically increasing last received count (an ACK from receiver to the sender).
         // if lastRecvd + 1 == lastSent ==> the receive is complete.
         std::atomic<uint64_t> lastRecvd;
