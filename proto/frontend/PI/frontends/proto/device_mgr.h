@@ -64,6 +64,7 @@
 #endif
 #define INVALID_SEND_CNT (0)
 #define INVALID_UPDATE (-1)
+#define SHM_VALIDATE
 #endif // HAVE_SHM
 
 
@@ -138,6 +139,9 @@ namespace local {
     };
 
     struct Update {
+#ifdef SHM_VALIDATE
+       uint64_t validationKey;
+#endif
         uint8_t type;
         TableEntry t;
     };
