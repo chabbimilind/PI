@@ -323,7 +323,7 @@ SimpleRouterMgr::assign(const std::string &config_buffer,
 		  update->set_type(p4::v1::Update_Type_INSERT);
 		  auto entity = update->mutable_entity();
 		  entity->set_allocated_table_entry(&match_action_entry);
-		  entity->release_table_entry();
+		  //entity->release_table_entry();
 	  }
 
   std::cout <<"\n Start SHM copy work\n";
@@ -338,6 +338,7 @@ SimpleRouterMgr::assign(const std::string &config_buffer,
 	  std::cout << "write time " << (total_write_request_time)<<  ", write rate = " << 1000.0 * double(entries * req_num) / (total_write_request_time);
 	  fflush(stdout);
   }
+	exit (-1);
   }
   return 0;
 }

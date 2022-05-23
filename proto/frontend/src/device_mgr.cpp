@@ -151,30 +151,29 @@ namespace fe {
     // Serialize walks the p4::v1::Update protobuf and serializes it
     // into C-struct pi::fe::local::Update.
     // TODO: counters and meters if needed.
-    static void Serialize(const p4::v1::Update &update, pi::fe::local::Update &myUpdate) {
+   static void Serialize(const p4::v1::Update &update, pi::fe::local::Update &myUpdate) {
         if (!update.has_entity()) {
             myUpdate.type = INVALID_UPDATE;
             return;
         }
-        auto entity = update.entity();
+        const p4::v1::Entity & entity = update.entity();
         if (!entity.has_table_entry()) {
             myUpdate.type = INVALID_UPDATE;
             return;
         }
         myUpdate.type = update.type();
         TableEntry & myTableEntry = myUpdate.t;
-        auto table = entity.table_entry();
+        const ::p4::v1::TableEntry & table = entity.table_entry();
         myTableEntry.table_id_ = table.table_id();
         myTableEntry.numFields = table.match_size();
         for (int m = 0; m < table.match_size(); m++) {
-            auto match = table.match(m);
+            const ::p4::v1::FieldMatch & match = table.match(m);
             FieldMatch &myMatch = myTableEntry.match_[m];
             myMatch.field_id_ = match.field_id();
             myMatch.underlyingType = match.field_match_type_case();
             switch (match.field_match_type_case())
-            {
             case ::p4::v1::FieldMatch::FieldMatchTypeCase::kExact: {
-                auto exact = match.exact();
+                const ::p4::v1::FieldMatch_Exact & exact = match.exact();
                 strncpy(myMatch.exact_.value, exact.value().c_str(), MAX_VALUE_STR);
                 break;
             }
@@ -187,17 +186,18 @@ namespace fe {
                 break;
             }
         }
-        auto action = table.action().action();
+        const ::p4::v1::Action & action = table.action().action();
         Action & myaction = myTableEntry.action_;
         myaction.action_id_ = action.action_id();
         myaction.num_params_ = action.params_size();
         for (int m = 0; m < action.params_size(); m++) {
-            auto param = action.params(m);
+            const ::p4::v1::Action_Param & param = action.params(m);
             Action_Param &myParam = myaction.params_[m];
             myParam.param_id_ = param.param_id();
             strncpy(myParam.value, param.value().c_str(), MAX_VALUE_STR);
         }
     }
+
 
     static std::mutex devShmMapMutex;
     static std::unordered_map<uint64_t, void*> devShmMap;
@@ -288,8 +288,8 @@ namespace fe {
                 // Serialize the protobuf into SHM.
                 for (int i = workerStart; i < workerEnd; i++) {
                     int shmPosition = i % pi::fe::local::_shmMaxEntries;
-                    auto update = request.updates(i);
-		    pi::fe::local::Serialize(update, data[shmPosition]);
+                    const ::p4::v1::Update & update  = request.updates(i);
+                    pi::fe::local::Serialize(update, data[shmPosition]);
                 }
                 #pragma omp barrier
 
