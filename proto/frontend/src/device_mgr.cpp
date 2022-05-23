@@ -171,7 +171,7 @@ namespace fe {
             FieldMatch &myMatch = myTableEntry.match_[m];
             myMatch.field_id_ = match.field_id();
             myMatch.underlyingType = match.field_match_type_case();
-            switch (match.field_match_type_case())
+            switch (match.field_match_type_case()) {
             case ::p4::v1::FieldMatch::FieldMatchTypeCase::kExact: {
                 const ::p4::v1::FieldMatch_Exact & exact = match.exact();
                 strncpy(myMatch.exact_.value, exact.value().c_str(), MAX_VALUE_STR);
